@@ -5,5 +5,4 @@ matplotlib
 seaborn
 torch
 Flask
-streamlit==1.19.0
-altair==4.2.2
+streamlit==1.32.0
