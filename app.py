@@ -38,9 +38,9 @@ def red_black_sor_2d_vectorized(Tu, Td, Tl, Tr, n, tol=1e-6, max_iter=5000):
         east  = torch.zeros_like(T)
 
         north[1:, :] = T[:-1, :]
-        north[0, :] = Tu
+        north[0, :] = Td
         south[:-1, :] = T[1:, :]
-        south[-1, :] = Td
+        south[-1, :] = Tu
         west[:, 1:] = T[:, :-1]
         west[:, 0] = Tl
         east[:, :-1] = T[:, 1:]
