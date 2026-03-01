@@ -1,81 +1,54 @@
 import streamlit as st
 import torch
 import time
-import matplotlib.pyplot as plt
 import math
+import plotly.express as px
+import plotly.graph_objects as go
+import numpy as np
+import pandas as pd
+import os
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import r2_score
 
-# -------------------- APP TITLE --------------------
 st.title("2-D Temperature Analysis Using Finite Difference Method")
 
 # -------------------- GRID SIZE --------------------
-m = st.number_input(
-    "Enter Number of Grids",
-    min_value=3,
-    step=1,
-    format="%d"
-)
-
-# -------------------- INDEX MAPPING --------------------
-def coordinate_to_index(m, i, j):
-    return i * (m - 1) + j
+m = st.number_input("Enter Number of Grids",
+                    min_value=3,
+                    step=1,
+                    format="%d")
 
 # -------------------- SOLVER --------------------
-
 def red_black_sor_2d_vectorized(Tu, Td, Tl, Tr, n, tol=1e-6, max_iter=5000):
-    """
-    Fully vectorized Red-Black SOR for 2D steady heat equation.
-
-    Tu, Td, Tl, Tr : boundary temperatures
-    n              : number of interior points per direction
-    tol            : convergence tolerance
-    max_iter       : maximum iterations
-
-    Returns:
-    T              : (n x n) temperature field
-    elapsed_time   : computation time (seconds)
-    iterations     : number of iterations used
-    """
 
     start_time = time.perf_counter()
-
-    # Interior temperature field
     T = torch.zeros((n, n), dtype=torch.float32)
-
-    # Optimal relaxation factor
     omega = 2.0 / (1.0 + math.sin(math.pi / n))
 
-    # Create checkerboard masks
-    I, J = torch.meshgrid(
-        torch.arange(n), torch.arange(n), indexing="ij"
-    )
+    I, J = torch.meshgrid(torch.arange(n), torch.arange(n), indexing="ij")
     red = (I + J) % 2 == 0
     black = ~red
 
     for k in range(max_iter):
         T_old = T.clone()
 
-        # ---------- RED UPDATE ----------
         north = torch.zeros_like(T)
         south = torch.zeros_like(T)
         west  = torch.zeros_like(T)
         east  = torch.zeros_like(T)
 
         north[1:, :] = T[:-1, :]
-        north[0, :] = Td
-
+        north[0, :] = Tu
         south[:-1, :] = T[1:, :]
-        south[-1, :] = Tu
-
+        south[-1, :] = Td
         west[:, 1:] = T[:, :-1]
         west[:, 0] = Tl
-
         east[:, :-1] = T[:, 1:]
         east[:, -1] = Tr
 
         T_new = 0.25 * (north + south + west + east)
         T[red] = (1 - omega) * T[red] + omega * T_new[red]
 
-        # ---------- BLACK UPDATE ----------
         north[1:, :] = T[:-1, :]
         south[:-1, :] = T[1:, :]
         west[:, 1:] = T[:, :-1]
@@ -84,247 +57,195 @@ def red_black_sor_2d_vectorized(Tu, Td, Tl, Tr, n, tol=1e-6, max_iter=5000):
         T_new = 0.25 * (north + south + west + east)
         T[black] = (1 - omega) * T[black] + omega * T_new[black]
 
-        # Convergence check
         if torch.max(torch.abs(T - T_old)) < tol:
             break
 
     elapsed_time = time.perf_counter() - start_time
-
     return T, elapsed_time, k + 1
 
-def red_black_sor_2d(Tu, Td, Tl, Tr, n, tol=1e-3, max_iter=5000):
 
-    start_time = time.perf_counter()   # ⏱ START TIMER
+# -------------------- LOG DATA --------------------
+def log_run_data(grid_size, iterations, time_taken):
+    file_name = "solver_runs.csv"
 
-    T = torch.zeros((n, n), dtype=torch.float32)
-    omega = 2.0 / (1.0 + math.sin(math.pi / n))
+    new_data = pd.DataFrame([{
+        "grid_size": grid_size,
+        "iterations": iterations,
+        "time_taken": time_taken
+    }])
 
-    for k in range(max_iter):
-        T_old = T.clone()
+    if os.path.exists(file_name):
+        old_data = pd.read_csv(file_name)
+        updated = pd.concat([old_data, new_data], ignore_index=True)
+    else:
+        updated = new_data
 
-        # RED nodes
-        for i in range(n):
-            for j in range(n):
-                if (i + j) % 2 == 0:
-                    north = Tu if i == 0 else T[i-1, j]
-                    south = Td if i == n-1 else T[i+1, j]
-                    west  = Tl if j == 0 else T[i, j-1]
-                    east  = Tr if j == n-1 else T[i, j+1]
-
-                    T_new = 0.25 * (north + south + west + east)
-                    T[i, j] = (1 - omega) * T[i, j] + omega * T_new
-
-        # BLACK nodes
-        for i in range(n):
-            for j in range(n):
-                if (i + j) % 2 == 1:
-                    north = Tu if i == 0 else T[i-1, j]
-                    south = Td if i == n-1 else T[i+1, j]
-                    west  = Tl if j == 0 else T[i, j-1]
-                    east  = Tr if j == n-1 else T[i, j+1]
-
-                    T_new = 0.25 * (north + south + west + east)
-                    T[i, j] = (1 - omega) * T[i, j] + omega * T_new
-
-        if torch.max(torch.abs(T - T_old)) < tol:
-            break
-
-    end_time = time.perf_counter()     # ⏱ END TIMER
-    elapsed_time = end_time - start_time
-
-    return T, elapsed_time
+    updated.to_csv(file_name, index=False)
 
 
+# -------------------- PERFORMANCE ANALYSIS --------------------
+def plot_performance_analysis():
+    file_name = "solver_runs.csv"
 
-def gauss_seidel_2d( Tu, Td, Tl, Tr, n, tol=1e-2, max_iter=5000):
-    progress_holder = st.empty()
-    progress = progress_holder.progress(0)
-    """
-    Solves A x = b for 2D Laplace equation using Gauss-Seidel
-    without forming matrix A.
+    if not os.path.exists(file_name):
+        return
 
-    Inputs:
-    b        : torch tensor (n x n) RHS
-    Tu, Td   : top and bottom boundary values
-    Tl, Tr   : left and right boundary values
-    n        : number of interior nodes per direction
-    tol      : convergence tolerance
-    max_iter : maximum iterations
+    df = pd.read_csv(file_name)
+    df = df.sort_values("grid_size")
+    if len(df) < 3:
+        st.warning("Run solver with at least 3 different grid sizes.")
+        return
 
-    Output:
-    T : torch tensor (n x n) temperature field
-    """
+    # -------- Iterations vs n (Expected Linear) --------
+    X_iter = df[["grid_size"]]
+    y_iter = df["iterations"]
 
-    T = torch.zeros((n, n), dtype=torch.float32)
+    model_iter = LinearRegression()
+    model_iter.fit(X_iter, y_iter)
 
-    for k in range(max_iter):
-        T_old = T.clone()
+    df["iter_pred"] = model_iter.predict(X_iter)
+    r2_iter = r2_score(y_iter, df["iter_pred"])
 
-        for i in range(n):
-            for j in range(n):
-                north = Tu if i == 0     else T[i-1, j]
-                south = Td if i == n-1   else T[i+1, j]
-                west  = Tl if j == 0     else T[i, j-1]
-                east  = Tr if j == n-1   else T[i, j+1]
+    fig_iter = go.Figure()
+    fig_iter.add_trace(go.Scatter(
+        x=df["grid_size"],
+        y=y_iter,
+        mode="markers",
+        name="Actual"
+    ))
+    fig_iter.add_trace(go.Scatter(
+        x=df["grid_size"],
+        y=df["iter_pred"],
+        mode="lines",
+        name="Fit (O(n))"
+    ))
 
-                T[i, j] = 0.25 * (north + south + west + east)
-        percent = int((k) / (max_iter - 1) * 90)
-        progress.progress(min(percent, 100))
+    fig_iter.update_layout(
+        title=f"Iterations vs Grid Size  |  R² = {r2_iter:.4f}",
+        xaxis_title="Grid Size (n)",
+        yaxis_title="Iterations",
+        height=550
+    )
 
-        if torch.norm(T - T_old) < tol:
-            break
+    st.plotly_chart(fig_iter, use_container_width=True)
 
-    return T
+    # -------- Time vs n³ (Expected Cubic Scaling) --------
+    df["n_cubed"] = df["grid_size"] ** 3
+    X_time = df[["n_cubed"]]
+    y_time = df["time_taken"]
 
-def create_temp_2d(m, Tu, Td, Tl, Tr):
-    progress_holder = st.empty()
-    progress = progress_holder.progress(0)
+    model_time = LinearRegression()
+    model_time.fit(X_time, y_time)
 
-    time.sleep(0.1)
-    progress.progress(5)
+    df["time_pred"] = model_time.predict(X_time)
+    r2_time = r2_score(y_time, df["time_pred"])
 
-    N = (m - 1) ** 2
-    coef = torch.zeros((N, N))
-    const = torch.zeros((N, 1))
+    fig_time = go.Figure()
+    fig_time.add_trace(go.Scatter(
+        x=df["grid_size"],
+        y=y_time,
+        mode="markers",
+        name="Actual"
+    ))
+    fig_time.add_trace(go.Scatter(
+        x=df["grid_size"],
+        y=df["time_pred"],
+        mode="lines",
+        name="Fit (O(n³))"
+    ))
 
-    for i in range(m - 1):
-        for j in range(m - 1):
-            row = coordinate_to_index(m, i, j)
-            coef[row, row] = -4
+    fig_time.update_layout(
+        title=f"Time vs Grid Size (Cubic Scaling)  |  R² = {r2_time:.4f}",
+        xaxis_title="Grid Size (n)",
+        yaxis_title="Time (seconds)",
+        height=550
+    )
 
-            if i > 0:
-                coef[row, coordinate_to_index(m, i - 1, j)] += 1
-            else:
-                const[row] -= Tu
+    st.plotly_chart(fig_time, use_container_width=True)
 
-            if i < m - 2:
-                coef[row, coordinate_to_index(m, i + 1, j)] += 1
-            else:
-                const[row] -= Td
 
-            if j > 0:
-                coef[row, coordinate_to_index(m, i, j - 1)] += 1
-            else:
-                const[row] -= Tl
+# -------------------- HEATMAP --------------------
+def plot_temperature(Temp, Tu, Td, Tl, Tr):
 
-            if j < m - 2:
-                coef[row, coordinate_to_index(m, i, j + 1)] += 1
-            else:
-                const[row] -= Tr
-
-        percent = int((i + 1) / (m - 1) * 90)
-        progress.progress(percent)
-
-    # Solve (NO inverse)
-    result = torch.linalg.solve(coef, const)
-
-    Temp = torch.zeros((m - 1, m - 1))
-    for i in range(m - 1):
-        for j in range(m - 1):
-            Temp[i, j] = result[coordinate_to_index(m, i, j)]
-
-    progress.progress(100)
-    time.sleep(0.3)
-    progress_holder.empty()
-
-    return Temp
-
-# -------------------- PLOT --------------------
-def plot_temperature(Temp, Tu, Td, Tl, Tr, m):
-    Tfull = torch.zeros((m + 1, m + 1))
+    m_internal = Temp.shape[0] + 1
+    Tfull = torch.zeros((m_internal + 1, m_internal + 1))
     Tfull[1:-1, 1:-1] = Temp
 
-    Tfull[0, :]  = Tu  # bottom
-    Tfull[-1, :] = Td   # top
-    Tfull[:, 0]  = Tl   # left
-    Tfull[:, -1] = Tr   # right
+    Tfull[0, :] = Tu
+    Tfull[-1, :] = Td
+    Tfull[:, 0] = Tl
+    Tfull[:, -1] = Tr
 
+    T_np = Tfull.numpy()
 
-    fig, ax = plt.subplots()
-    im = ax.imshow(Tfull, cmap="inferno", origin="lower")
-    fig.colorbar(im, ax=ax, label="Temperature (K)")
-    ax.set_title("Temperature Distribution Heat Map")
-    #ax.set_xlabel("x")
-    #ax.set_ylabel("y")
+    fig = px.imshow(
+        T_np,
+        color_continuous_scale="inferno",
+        origin="lower",
+        aspect="equal"
+    )
+
+    fig.update_traces(
+        hovertemplate="X: %{x}<br>Y: %{y}<br>Temperature: %{z:.2f} K<extra></extra>"
+    )
+
+    fig.update_layout(height=750)
 
     return fig
 
-# -------------------- QUERY --------------------
-def temperature_at_point(Temp, x, y):
-    return Temp[x, y].item()
 
-# -------------------- BOUNDARY CONDITIONS --------------------
+# -------------------- BOUNDARY INPUT --------------------
 st.subheader("Boundary Conditions")
 
-col1,col2 = st.columns(2)
+col1, col2 = st.columns(2)
+
 with col1:
-    Td = st.number_input("Top Temperature (K)", min_value=0, step=10, format="%d")
-    Tu = st.number_input("Bottom Temperature (K)", min_value=0, step=10, format="%d")
+    Td = st.number_input("Top Temperature (K)", min_value=0, step=10)
+    Tu = st.number_input("Bottom Temperature (K)", min_value=0, step=10)
+
 with col2:
-    Tl = st.number_input("Left Temperature (K)", min_value=0, step=10, format="%d")
-    Tr = st.number_input("Right Temperature (K)", min_value=0, step=10, format="%d")
+    Tl = st.number_input("Left Temperature (K)", min_value=0, step=10)
+    Tr = st.number_input("Right Temperature (K)", min_value=0, step=10)
 
-# -------------------- CENTER BUTTON --------------------
-_, mid, _ = st.columns([1, 3, 1])
-with mid:
-    b1, b2, b3 = st.columns([1, 2, 1])
-    with b2:
-        #calculate_1 = st.button("Calculate Temperature", type="primary")
-        calculate_2 = st.button("Calculate Temperature", type="primary",key="efficient way")
+# -------------------- CALCULATE --------------------
+if st.button("Calculate Temperature", type="primary"):
 
-# -------------------- RUN SOLVER (ONLY ON BUTTON) --------------------
-#if calculate_1:
-#   with st.spinner("Calculating temperature..."):
-#      st.session_state["computed"] = True
-#     st.session_state["params"] = (m, Tu, Td, Tl, Tr)
-if calculate_2:
-    with st.spinner("Calculating temperature..."):
-        Temp, solve_time, iters = red_black_sor_2d_vectorized(
-            Tu=Td,
-            Td=Tu,
-            Tl=Tl,
-            Tr=Tr,
-            n=m-1,
-            tol=0.01,
-            max_iter=5000
-        )
+    Temp, solve_time, iters = red_black_sor_2d_vectorized(
+        Tu=Td,
+        Td=Tu,
+        Tl=Tl,
+        Tr=Tr,
+        n=m-1,
+        tol=0.01
+    )
 
-        st.session_state["Temp"] = Temp
-        st.session_state["time"] = solve_time
-        st.session_state["iters"] = iters
-        st.session_state["computed"] = True
-        st.session_state["params"] = (m, Tu, Td, Tl, Tr)
+    st.session_state["Temp"] = Temp
+    st.session_state["time"] = solve_time
+    st.session_state["iters"] = iters
+    st.session_state["Tu"] = Tu
+    st.session_state["Td"] = Td
+    st.session_state["Tl"] = Tl
+    st.session_state["Tr"] = Tr
 
+    log_run_data(m, iters, solve_time)
 
-
-# -------------------- DISPLAY RESULTS --------------------
-if st.session_state.get("computed", False):
-    Temp = st.session_state["Temp"]
+# -------------------- DISPLAY --------------------
+if "Temp" in st.session_state:
 
     st.success("Calculation complete!")
 
-    if "time" in st.session_state:
-        #st.metric("Solver Time (s)", f"{st.session_state['time']:.4f}")
-        #st.metric("Iterations", st.session_state["iters"])
+    st.metric("Solver Time (s)", f"{st.session_state['time']:.4f}")
+    st.metric("Iterations", st.session_state["iters"])
 
-        fig = plot_temperature(Temp, Tu, Td, Tl, Tr, m)
-        st.pyplot(fig)
-        plt.close(fig)
+    fig = plot_temperature(
+        st.session_state["Temp"],
+        st.session_state["Tu"],
+        st.session_state["Td"],
+        st.session_state["Tl"],
+        st.session_state["Tr"]
+    )
 
+    st.plotly_chart(fig, use_container_width=True)
 
-    st.subheader("Query Temperature at a Point")
-
-    c1, c2 = st.columns(2)
-    with c1:
-        x = st.number_input("X Coordinate", 0, m - 2, step=1, key="x_query")
-    with c2:
-        y = st.number_input("Y Coordinate", 0, m - 2, step=1, key="y_query")
-
-    # Submit button
-    query_btn = st.button("Get Temperature at Point", key="query_temp_btn")
-
-    # Show result ONLY after clicking button
-    if query_btn:
-        temp_val = temperature_at_point(Temp, x, y)
-        st.success(f"Temperature at ({x}, {y}) = {temp_val:.2f} K")
-
+    st.subheader("Solver Performance Analysis")
+    plot_performance_analysis()

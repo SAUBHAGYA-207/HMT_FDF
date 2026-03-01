@@ -6,3 +6,5 @@ seaborn
 torch
 Flask
 streamlit==1.54.0
+plotly
+scikit-learn
