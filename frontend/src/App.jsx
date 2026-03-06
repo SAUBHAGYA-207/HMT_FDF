@@ -11,16 +11,19 @@ function App() {
 
   const handleInputChange = (e) => setParams({ ...params, [e.target.name]: Number(e.target.value) });
 
-  const runSimulation = async () => {
-    setLoading(true);
-    try {
-      const res = await axios.post('http://localhost:8000/api/calculate', params);
-      setResults(res.data);
-      const reg = await axios.get('http://localhost:8000/api/regression');
-      if (!reg.data.error) setRegData(reg.data);
-    } catch (e) { console.error(e); }
-    setLoading(false);
-  };
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+
+const runSimulation = async () => {
+  setLoading(true);
+  try {
+    // Uses the live URL on the web, or localhost if the variable isn't set
+    const res = await axios.post(`${API_BASE_URL}/api/calculate`, params);
+    setResults(res.data);
+    const reg = await axios.get(`${API_BASE_URL}/api/regression`);
+    if (!reg.data.error) setRegData(reg.data);
+  } catch (e) { console.error(e); }
+  setLoading(false);
+};
 
   const heatmapLayout = (title) => ({
     width: 460, height: 440,
