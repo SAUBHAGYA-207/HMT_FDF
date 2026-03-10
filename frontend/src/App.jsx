@@ -76,10 +76,10 @@ function App() {
           <h3>Configuration Panel</h3>
           <div className="input-group"><label>Mesh Resolution (m)</label><input type="number" value={params.m} onChange={(e)=>setParams({...params, m: Number(e.target.value)})} /></div>
           <div className="boundary-grid">
-            <div className="input-group"><label>Top Boundary (K)</label><input type="number" value={params.Td} onChange={(e)=>setParams({...params, Td: Number(e.target.value)})} /></div>
-            <div className="input-group"><label>Bottom Boundary (K)</label><input type="number" value={params.Tu} onChange={(e)=>setParams({...params, Tu: Number(e.target.value)})} /></div>
-            <div className="input-group"><label>Left Boundary (K)</label><input type="number" value={params.Tl} onChange={(e)=>setParams({...params, Tl: Number(e.target.value)})} /></div>
-            <div className="input-group"><label>Right Boundary (K)</label><input type="number" value={params.Tr} onChange={(e)=>setParams({...params, Tr: Number(e.target.value)})} /></div>
+            <div className="input-group"><label>Boundary Top (K)</label><input type="number" value={params.Td} onChange={(e)=>setParams({...params, Td: Number(e.target.value)})} /></div>
+            <div className="input-group"><label>Boundary Bottom (K)</label><input type="number" value={params.Tu} onChange={(e)=>setParams({...params, Tu: Number(e.target.value)})} /></div>
+            <div className="input-group"><label>Boundary Left (K)</label><input type="number" value={params.Tl} onChange={(e)=>setParams({...params, Tl: Number(e.target.value)})} /></div>
+            <div className="input-group"><label>Boundary Right (K)</label><input type="number" value={params.Tr} onChange={(e)=>setParams({...params, Tr: Number(e.target.value)})} /></div>
           </div>
           <button className="btn-exec" onClick={runSimulation} disabled={loading}>{loading ? `Processing (${progress}%)` : 'Execute Simulation'}</button>
           {loading && <div className="progress-bg"><div className="progress-fill" style={{ width: `${progress}%` }}></div></div>}
@@ -96,21 +96,13 @@ function App() {
       {results && (
         <div className="fade-in">
           <div className="card accuracy-banner">
-            <span>Global Convergence Index</span>
+            <span>Solution Convergence Index</span>
             <h2>{results.validation_score.toFixed(3)}%</h2>
           </div>
 
           <div className="plot-grid">
-            <div className="card plot-card">
-              <Plot data={[{ z: results.fdm, type: 'heatmap', colorscale: 'Jet', zsmooth: 'fast' }]} 
-                layout={{ title: 'Numerical Solution (SOR)', width: 400, height: 400, xaxis: {title: 'x'}, yaxis: {title: 'y'} }} 
-                config={{responsive: true}} />
-            </div>
-            <div className="card plot-card">
-              <Plot data={[{ z: results.analytic, type: 'heatmap', colorscale: 'Jet', zsmooth: 'fast' }]} 
-                layout={{ title: 'Analytical Solution', width: 400, height: 400, xaxis: {title: 'x'}, yaxis: {title: 'y'} }} 
-                config={{responsive: true}} />
-            </div>
+            <Plot data={[{ z: results.fdm, type: 'heatmap', colorscale: 'Jet' }]} layout={{ title: 'Numerical Solution (SOR)', width: 450, height: 450 }} />
+            <Plot data={[{ z: results.analytic, type: 'heatmap', colorscale: 'Jet' }]} layout={{ title: 'Analytical Solution', width: 450, height: 450 }} />
           </div>
 
           <div className="card query-container">
@@ -133,10 +125,8 @@ function App() {
             <div className="card complexity-card">
               <h3>System Complexity Profiles</h3>
               <div className="plot-grid">
-                <Plot data={[{ x: regData.x_range, y: regData.y_iter_curve, mode: 'lines', name: 'Model' }, { x: [params.m], y: [results.iters], mode: 'markers', name: 'Current', marker: { color: 'red', size: 10 } }]} 
-                  layout={{ width: 400, height: 350, title: 'Iteration Trend', xaxis: {title: 'm'}, yaxis: {title: 'Iters'} }} />
-                <Plot data={[{ x: regData.x_range, y: regData.y_time_curve, mode: 'lines', name: 'Model' }, { x: [params.m], y: [results.time], mode: 'markers', name: 'Current', marker: { color: 'red', size: 10 } }]} 
-                  layout={{ width: 400, height: 350, title: 'Runtime Trend', xaxis: {title: 'm'}, yaxis: {title: 'Time (s)'} }} />
+                <Plot data={[{ x: regData.x_range, y: regData.y_iter_curve, mode: 'lines', name: 'Est. O(n)' }, { x: [params.m], y: [results.iters], mode: 'markers', marker: { color: 'red' } }]} layout={{ width: 450, height: 350, title: 'Iteration Trend', xaxis: {title: 'm'}, yaxis: {title: 'Iters'} }} />
+                <Plot data={[{ x: regData.x_range, y: regData.y_time_curve, mode: 'lines', name: 'Est. O(n³)' }, { x: [params.m], y: [results.time], mode: 'markers', marker: { color: 'red' } }]} layout={{ width: 450, height: 350, title: 'Runtime Trend', xaxis: {title: 'm'}, yaxis: {title: 'Time (s)'} }} />
               </div>
             </div>
           )}

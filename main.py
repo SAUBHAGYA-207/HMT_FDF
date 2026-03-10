@@ -1,16 +1,21 @@
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+import os
 import torch
 import math
 import time
 import pandas as pd
-import os
+import numpy as np
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from sklearn.linear_model import LinearRegression
 from sklearn.preprocessing import PolynomialFeatures
-import numpy as np
+from supabase import create_client, Client
+from dotenv import load_dotenv
 
-app = FastAPI(title="High-Performance Thermal Analysis Engine")
+# Load variables from .env
+load_dotenv()
+
+app = FastAPI(title="IIT Patna Thermal Analysis Engine")
 
 app.add_middleware(
     CORSMiddleware,
@@ -20,25 +25,35 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# --- SECURE SUPABASE CONFIGURATION ---
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+
+# Initialize Cloud Database Client
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
 progress_store = {"current": 0}
 
 class CalculateRequest(BaseModel):
     m: int
-    Tu: float 
-    Td: float 
-    Tl: float 
-    Tr: float 
+    Tu: float # Bottom
+    Td: float # Top
+    Tl: float # Left
+    Tr: float # Right
 
 def red_black_sor_solver(Tu, Td, Tl, Tr, n, tol=1e-3, max_iter=10000):
     global progress_store
     progress_store["current"] = 0
     start_time = time.perf_counter()
+    
     avg_temp = (Tu + Td + Tl + Tr) / 4.0
     T = torch.full((n, n), avg_temp, dtype=torch.float32)
     omega = 2.0 / (1.0 + math.sin(math.pi / (n + 1)))
+    
     I, J = torch.meshgrid(torch.arange(n), torch.arange(n), indexing="ij")
     red_mask = (I + J) % 2 == 0
     black_mask = ~red_mask
+    
     initial_diff = 0
     for iter_count in range(max_iter):
         T_old = T.clone()
@@ -49,12 +64,15 @@ def red_black_sor_solver(Tu, Td, Tl, Tr, n, tol=1e-3, max_iter=10000):
             east = torch.zeros_like(T); east[:, :-1] = T[:, 1:]; east[:, -1] = Tr
             T_new = 0.25 * (north + south + west + east)
             T[mask] = (1 - omega) * T[mask] + omega * T_new[mask]
+        
         current_diff = torch.max(torch.abs(T - T_old)).item()
         if iter_count == 0: initial_diff = max(current_diff, 1e-9)
+        
         if current_diff > tol:
-            conv_progress = int(100 * (1 - math.log(current_diff/tol) / math.log(initial_diff/tol)))
-            progress_store["current"] = max(0, min(99, conv_progress))
-        else: break
+            progress_store["current"] = int(max(0, min(99, 100 * (1 - math.log(current_diff/tol) / math.log(initial_diff/tol)))))
+        else:
+            break
+            
     progress_store["current"] = 100
     return T, time.perf_counter() - start_time, iter_count + 1
 
@@ -65,11 +83,13 @@ def get_progress():
 @app.post("/api/calculate")
 def calculate(req: CalculateRequest):
     temp_core, solve_time, iters = red_black_sor_solver(req.Tu, req.Td, req.Tl, req.Tr, req.m-1)
+    
     fdm_full = np.zeros((req.m + 1, req.m + 1))
     fdm_full[1:-1, 1:-1] = temp_core.numpy()
     fdm_full[0, :] = req.Tu; fdm_full[-1, :] = req.Td
     fdm_full[:, 0] = req.Tl; fdm_full[:, -1] = req.Tr
     
+    # Analytical Verification (Fourier Series)
     x_range = np.linspace(0, 1, req.m + 1)
     y_range = np.linspace(0, 1, req.m + 1)
     X, Y = np.meshgrid(x_range, y_range)
@@ -87,47 +107,47 @@ def calculate(req: CalculateRequest):
         )
     analytic = np.flipud(analytic)
     analytic[0,:]=req.Tu; analytic[-1,:]=req.Td; analytic[:,0]=req.Tl; analytic[:,-1]=req.Tr
-    
+
+    # Solution Convergence Index
     internal_fdm = fdm_full[1:-1, 1:-1]
     internal_ana = analytic[1:-1, 1:-1]
     if internal_fdm.size > 0:
         rmse = np.sqrt(np.mean((internal_fdm - internal_ana)**2))
-        t_range = max(abs(req.Tu - req.Td), abs(req.Tl - req.Tr), 1.0)
-        validation_index = max(0, 100 * (1 - (rmse / t_range)))
-    else: validation_index = 100.0
-
-    # DATA LOGGER: Storing boundaries, grid, and performance
-    file_name = "solver_runs.csv"
-    new_entry = pd.DataFrame([{
-        "grid_size": req.m, 
-        "T_top": req.Td, "T_bottom": req.Tu, "T_left": req.Tl, "T_right": req.Tr,
-        "iterations": iters, 
-        "time_taken": solve_time
-    }])
-    if os.path.exists(file_name):
-        pd.concat([pd.read_csv(file_name), new_entry], ignore_index=True).to_csv(file_name, index=False)
+        v_score = max(0, 100 * (1 - (rmse / max(abs(req.Tu - req.Td), 1.0))))
     else:
-        new_entry.to_csv(file_name, index=False)
+        v_score = 100.0
+
+    # CLOUD DATA LOGGING
+    try:
+        supabase.table("thermal_logs").insert({
+            "grid_size": req.m, 
+            "t_top": req.Td, "t_bottom": req.Tu, "t_left": req.Tl, "t_right": req.Tr,
+            "iterations": iters, "time_taken": solve_time, "validation_score": float(v_score)
+        }).execute()
+    except Exception as e:
+        print(f"Cloud DB Error: {e}")
     
-    return {"fdm": fdm_full.tolist(), "analytic": analytic.tolist(), "time": solve_time, "iters": iters, "validation_score": float(validation_index)}
+    return {"fdm": fdm_full.tolist(), "analytic": analytic.tolist(), "time": solve_time, "iters": iters, "validation_score": float(v_score)}
 
 @app.get("/api/regression")
 def get_regression():
-    if not os.path.exists("solver_runs.csv"): return {"error": "No data"}
-    df = pd.read_csv("solver_runs.csv").sort_values("grid_size").drop_duplicates("grid_size")
-    if len(df) < 3: return {"error": "Insufficient dataset"}
-    X = df[["grid_size"]].values
-    reg_i = LinearRegression().fit(X, df["iterations"].values)
-    poly = PolynomialFeatures(degree=3)
-    X_p = poly.fit_transform(X)
-    reg_t = LinearRegression().fit(X_p, df["time_taken"].values)
-    x_curve = np.linspace(X.min(), X.max()*1.2, 50).reshape(-1, 1)
-    return {
-        "x_range": x_curve.flatten().tolist(),
-        "y_iter_curve": reg_i.predict(x_curve).tolist(),
-        "y_time_curve": reg_t.predict(poly.transform(x_curve)).tolist(),
-        "coeffs": {
-            "iter_m": float(reg_i.coef_[0]), "iter_c": float(reg_i.intercept_),
-            "time_coeffs": reg_t.coef_.tolist(), "time_c": float(reg_t.intercept_)
+    try:
+        res = supabase.table("thermal_logs").select("*").execute()
+        if not res.data or len(res.data) < 3: return {"error": "Insufficient data"}
+        df = pd.DataFrame(res.data).sort_values("grid_size").drop_duplicates("grid_size")
+        X = df[["grid_size"]].values
+        reg_i = LinearRegression().fit(X, df["iterations"].values)
+        poly = PolynomialFeatures(degree=3)
+        reg_t = LinearRegression().fit(poly.fit_transform(X), df["time_taken"].values)
+        x_c = np.linspace(X.min(), X.max()*1.2, 50).reshape(-1, 1)
+        return {
+            "x_range": x_c.flatten().tolist(),
+            "y_iter_curve": reg_i.predict(x_c).tolist(),
+            "y_time_curve": reg_t.predict(poly.transform(x_c)).tolist(),
+            "coeffs": {
+                "iter_m": float(reg_i.coef_[0]), "iter_c": float(reg_i.intercept_),
+                "time_coeffs": reg_t.coef_.tolist(), "time_c": float(reg_t.intercept_)
+            }
         }
-    }
+    except:
+        return {"error": "Cloud connection failed"}

@@ -10,5 +10,7 @@ plotly
 scikit-learn
 pydantic
 fastapi
+python-dotenv
 uvicorn
+supabase
 gunicorn
