@@ -58,7 +58,7 @@ function App() {
     if(!results) return;
     const {x, y} = query; const m = params.m;
     if(x < 0 || x > m || y < 0 || y > m) return alert("Out of bounds!");
-    const f = results.fdm[m-y][x]; const a = results.analytic[m-y][x];
+    const f = results.fdm[y][x]; const a = results.analytic[y][x];
     const acc = 100 * (1 - Math.abs(f-a)/Math.max(a,1));
     setQueryResult({ f: f.toFixed(3), a: a.toFixed(3), acc: acc.toFixed(3) });
   };
@@ -155,7 +155,7 @@ function App() {
             </div>
 
 <div className="card regression-card">
-  <h3>Historical Performance Scatter</h3>
+  <h3>Historical Performance Comparison</h3>
   <div className="small-plots" style={{ display: 'flex', gap: '20px', justifyContent: 'center' }}>
     
     {/* Plot 1: Iterations Scatter */}
