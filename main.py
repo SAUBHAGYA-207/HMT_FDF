@@ -12,124 +12,112 @@ from sklearn.preprocessing import PolynomialFeatures
 from supabase import create_client, Client
 from dotenv import load_dotenv
 
-# 1. Load Environment Variables
 load_dotenv()
 
-app = FastAPI(title="IIT Patna Thermal Analysis Engine")
+app = FastAPI(title="2D Steady State thermal Analysis Dashboard ")
 
-# Enable CORS for frontend communication
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], 
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# 2. Secure Supabase Configuration
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-
-# Safety Check for Deployment
-if not SUPABASE_URL or not SUPABASE_KEY:
-    print("\n" + "!"*60 + "\nCRITICAL ERROR: SUPABASE CREDENTIALS MISSING\n" + "!"*60 + "\n")
-    SUPABASE_URL = "https://placeholder.supabase.co"
-    SUPABASE_KEY = "placeholder"
-
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 progress_store = {"current": 0}
 
 class CalculateRequest(BaseModel):
     m: int
-    Tu: float # Bottom
-    Td: float # Top
-    Tl: float # Left
-    Tr: float # Right
+    Tu: float; Td: float; Tl: float; Tr: float
 
-# --- SOR SOLVER LOGIC ---
-def red_black_sor_solver(Tu, Td, Tl, Tr, n, tol=1e-5, max_iter=20000):
+def sor_solver(Tu, Td, Tl, Tr, n, tol=1e-3, max_iter=10000):
     global progress_store
     progress_store["current"] = 0
     start_time = time.perf_counter()
-    avg_temp = (Tu + Td + Tl + Tr) / 4.0
-    T = torch.full((n, n), avg_temp, dtype=torch.float32)
+    T = torch.full((n, n), (Tu+Td+Tl+Tr)/4.0, dtype=torch.float32)
     omega = 2.0 / (1.0 + math.sin(math.pi / (n + 1)))
     I, J = torch.meshgrid(torch.arange(n), torch.arange(n), indexing="ij")
     red_mask = (I + J) % 2 == 0
     black_mask = ~red_mask
     initial_diff = 0
-    for iter_count in range(max_iter):
+    for it in range(max_iter):
         T_old = T.clone()
         for mask in [red_mask, black_mask]:
-            north = torch.zeros_like(T); north[1:, :] = T[:-1, :]; north[0, :] = Tu
-            south = torch.zeros_like(T); south[:-1, :] = T[1:, :]; south[-1, :] = Td
-            west = torch.zeros_like(T); west[:, 1:] = T[:, :-1]; west[:, 0] = Tl
-            east = torch.zeros_like(T); east[:, :-1] = T[:, 1:]; east[:, -1] = Tr
+            north = torch.zeros_like(T); north[1:,:] = T[:-1,:]; north[0,:] = Tu
+            south = torch.zeros_like(T); south[:-1,:] = T[1:,:]; south[-1,:] = Td
+            west = torch.zeros_like(T); west[:,1:] = T[:,:-1]; west[:,0] = Tl
+            east = torch.zeros_like(T); east[:,:-1] = T[:,1:]; east[:,-1] = Tr
             T_new = 0.25 * (north + south + west + east)
             T[mask] = (1 - omega) * T[mask] + omega * T_new[mask]
-        current_diff = torch.max(torch.abs(T - T_old)).item()
-        if iter_count == 0: initial_diff = max(current_diff, 1e-9)
-        if current_diff > tol:
-            progress_store["current"] = int(max(0, min(99, 100 * (1 - math.log(current_diff/tol) / math.log(initial_diff/tol)))))
+        diff = torch.max(torch.abs(T - T_old)).item()
+        if it == 0: initial_diff = max(diff, 1e-9)
+        if diff > tol:
+            progress_store["current"] = int(max(0, min(99, 100 * (1 - math.log(diff/tol)/math.log(initial_diff/tol)))))
         else: break
     progress_store["current"] = 100
-    return T, time.perf_counter() - start_time, iter_count + 1
+    return T, time.perf_counter() - start_time, it + 1
 
 @app.get("/api/health")
-def health_check():
-    try:
-        supabase.table("thermal_logs").select("id").limit(1).execute()
-        return {"status": "online", "database": "Connected"}
-    except:
-        return {"status": "online", "database": "Disconnected"}
+def health(): return {"status": "online"}
 
 @app.get("/api/progress")
-def get_progress():
-    return {"progress": progress_store["current"]}
+def get_progress(): return {"progress": progress_store["current"]}
 
 @app.post("/api/calculate")
 def calculate(req: CalculateRequest):
-    temp_core, solve_time, iters = red_black_sor_solver(req.Tu, req.Td, req.Tl, req.Tr, req.m-1)
-    fdm_full = np.zeros((req.m + 1, req.m + 1))
-    fdm_full[1:-1, 1:-1] = temp_core.numpy()
-    fdm_full[0, :] = req.Tu; fdm_full[-1, :] = req.Td
-    fdm_full[:, 0] = req.Tl; fdm_full[:, -1] = req.Tr
+    temp_core, solve_time, iters = sor_solver(req.Tu, req.Td, req.Tl, req.Tr, req.m-1)
+    fdm = np.zeros((req.m+1, req.m+1))
+    fdm[1:-1, 1:-1] = temp_core.numpy()
+    fdm[0,:]=req.Tu; fdm[-1,:]=req.Td; fdm[:,0]=req.Tl; fdm[:,-1]=req.Tr
     
-    # Analytical Solver
-    x_range = np.linspace(0, 1, req.m + 1); y_range = np.linspace(0, 1, req.m + 1)
-    X, Y = np.meshgrid(x_range, y_range); analytic = np.zeros((req.m + 1, req.m + 1))
-    for n_term in range(1, 151, 2):
-        npi = n_term * np.pi; sinh_npi = np.sinh(npi)
-        if np.isinf(sinh_npi): break
-        coeff = 4.0 / (npi * sinh_npi)
-        analytic += coeff * (req.Tu * np.sinh(npi * Y) * np.sin(npi * X) + req.Td * np.sinh(npi * (1 - Y)) * np.sin(npi * X) + req.Tl * np.sinh(npi * (1 - X)) * np.sin(npi * Y) + req.Tr * np.sinh(npi * X) * np.sin(npi * Y))
-    analytic = np.flipud(analytic)
-    analytic[0,:]=req.Tu; analytic[-1,:]=req.Td; analytic[:,0]=req.Tl; analytic[:,-1]=req.Tr
+    # Correct orientation: Array indexing is y=0 at top. 
+    # Flip to visual indexing (y=0 at base) for comparison with Fourier and plotting.
+    fdm = np.flipud(fdm)
 
-    # Solution Convergence Index
-    rmse = np.sqrt(np.mean((fdm_full[1:-1, 1:-1] - analytic[1:-1, 1:-1])**2))
-    v_score = max(0, 100 * (1 - (rmse / max(abs(req.Tu - req.Td), 1.0))))
-
-    # CLOUD LOGGING
+    x, y = np.meshgrid(np.linspace(0,1,req.m+1), np.linspace(0,1,req.m+1))
+    ana = np.zeros_like(fdm)
+    for n in range(1, 151, 2):
+        npi = n*np.pi; s_npi = np.sinh(npi)
+        if np.isinf(s_npi): break
+        c = 4.0/(npi*s_npi)
+        ana += c*(req.Tu*np.sinh(npi*y)*np.sin(npi*x) + req.Td*np.sinh(npi*(1-y))*np.sin(npi*x) + req.Tl*np.sinh(npi*(1-x))*np.sin(npi*y) + req.Tr*np.sinh(npi*x)*np.sin(npi*y))
+    
+    # Analytical already assumes y=0 at bottom, but we apply 
+    # flipud to maintain absolute coordinate indexing parity with the FDM array.
+    ana[0,:]=req.Td; ana[-1,:]=req.Tu; ana[:,0]=req.Tl; ana[:,-1]=req.Tr
+    #ana = np.flipud(ana) 
+    
+    
+    internal_fdm = fdm[1:-1, 1:-1]
+    internal_ana = ana[1:-1, 1:-1]
+    rmse = np.sqrt(np.mean((internal_fdm - internal_ana)**2))
+    v_score = max(0, 100 * (1 - (rmse / max(abs(req.Tu-req.Td),1.0))))
+    
     try:
-        supabase.table("thermal_logs").insert({
-            "grid_size": req.m, "t_top": req.Td, "t_bottom": req.Tu, "t_left": req.Tl, "t_right": req.Tr,
-            "iterations": iters, "time_taken": solve_time, "validation_score": float(v_score)
-        }).execute()
-    except Exception as e: print(f"Cloud DB Error: {e}")
+        supabase.table("thermal_logs").insert({"grid_size":req.m, "t_top":req.Td, "t_bottom":req.Tu, "t_left":req.Tl, "t_right":req.Tr, "iterations":iters, "time_taken":solve_time, "validation_score":float(v_score)}).execute()
+    except Exception as e: print(f"DB Error: {e}")
     
-    return {"fdm": fdm_full.tolist(), "analytic": analytic.tolist(), "time": solve_time, "iters": iters, "validation_score": float(v_score)}
+    return {"fdm": fdm.tolist(), "analytic": ana.tolist(), "time": solve_time, "iters": iters}
 
 @app.get("/api/regression")
-def get_regression():
+def get_raw_data():
     try:
-        res = supabase.table("thermal_logs").select("*").execute()
-        if not res.data or len(res.data) < 3: return {"error": "Insufficient data"}
-        df = pd.DataFrame(res.data).sort_values("grid_size").drop_duplicates("grid_size")
-        X = df[["grid_size"]].values; reg_i = LinearRegression().fit(X, df["iterations"].values)
-        poly = PolynomialFeatures(degree=3); reg_t = LinearRegression().fit(poly.fit_transform(X), df["time_taken"].values)
-        x_c = np.linspace(X.min(), X.max()*1.2, 50).reshape(-1, 1)
-        return {"x_range": x_c.flatten().tolist(), "y_iter_curve": reg_i.predict(x_c).tolist(), "y_time_curve": reg_t.predict(poly.transform(x_c)).tolist(),
-            "coeffs": {"iter_m": float(reg_i.coef_[0]), "iter_c": float(reg_i.intercept_), "time_coeffs": reg_t.coef_.tolist(), "time_c": float(reg_t.intercept_)}}
-    except: return {"error": "DB Retrieval failed"}
+        res = supabase.table("thermal_logs").select("grid_size", "iterations", "time_taken").execute()
+        if not res.data:
+            return {"error": "no_data"}
+        
+        # Sort data by grid size for better visual flow in the scatter plot
+        df = pd.DataFrame(res.data).sort_values("grid_size")
+        
+        return {
+            "m_values": df["grid_size"].tolist(),
+            "iter_values": df["iterations"].tolist(),
+            "time_values": df["time_taken"].tolist()
+        }
+    except Exception as e:
+        print(f"DB Fetch Error: {e}")
+        return {"error": "db_error"}

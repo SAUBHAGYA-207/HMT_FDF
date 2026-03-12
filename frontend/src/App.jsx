@@ -4,93 +4,222 @@ import Plot from 'react-plotly.js';
 import './App.css';
 
 function App() {
-  const [params, setParams] = useState({ m: 50, Tu: 100, Td: 0, Tl: 0, Tr: 0 });
+  const [params, setParams] = useState({ m: 50, Tu: 25, Td: 25, Tl: 25, Tr: 25 });
   const [results, setResults] = useState(null);
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState(0);
-  const [status, setStatus] = useState('checking');
+  const [status, setStatus] = useState('checking'); // Dynamic status
   const [regData, setRegData] = useState(null);
+  const [prediction, setPrediction] = useState({ iters: '--', time: '--' });
   const [query, setQuery] = useState({ x: 0, y: 0 });
   const [queryResult, setQueryResult] = useState(null);
 
-  const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
+  const API = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
 
   useEffect(() => {
-    const init = async () => {
+    const checkBackend = async () => {
       try {
-        const res = await axios.get(`${API_BASE_URL}/api/health`);
-        setStatus(res.data.status === 'online' ? 'online' : 'offline');
-        const r = await axios.get(`${API_BASE_URL}/api/regression`);
-        if(!r.data.error) setRegData(r.data);
-      } catch { setStatus('offline'); }
+        const res = await axios.get(`${API}/api/health`);
+        if (res.data.status === 'online') {
+          setStatus('online');
+          fetchReg();
+        } else {
+          setStatus('offline');
+        }
+      } catch (e) {
+        setStatus('offline');
+      }
     };
-    init();
-  }, [API_BASE_URL]);
+    checkBackend();
+  }, [API]);
 
-  const runSimulation = async () => {
+  const fetchReg = async () => {
+    try { const r = await axios.get(`${API}/api/regression`); if(!r.data.error) setRegData(r.data); } catch(e){}
+  };
+
+  const solve = async () => {
+    if (regData?.coeffs) {
+      const { iter_m, iter_c, time_coeffs, time_c } = regData.coeffs;
+      const m = params.m;
+      setPrediction({ iters: Math.round(iter_m*m + iter_c), time: (time_c + time_coeffs[1]*m + time_coeffs[2]*m**2 + time_coeffs[3]*m**3).toFixed(4) });
+    }
     setLoading(true); setProgress(0); setResults(null);
-    const poll = setInterval(async () => {
-      const res = await axios.get(`${API_BASE_URL}/api/progress`);
-      setProgress(res.data.progress);
-    }, 300);
+    const p = setInterval(async () => { 
+        try { const r = await axios.get(`${API}/api/progress`); setProgress(r.data.progress); } catch(e){}
+    }, 250);
     try {
-      const res = await axios.post(`${API_BASE_URL}/api/calculate`, params);
-      setResults(res.data);
-      clearInterval(poll); setProgress(100);
-    } catch { clearInterval(poll); }
+      const res = await axios.post(`${API}/api/calculate`, params);
+      setResults(res.data); clearInterval(p); setProgress(100); fetchReg();
+    } catch (e) { clearInterval(p); }
     setLoading(false);
   };
 
-  const handleQuery = () => {
-    if (!results) return;
-    const { x, y } = query; const m = params.m;
-    const fdmVal = results.fdm[m - Math.round(y)][Math.round(x)];
-    const anaVal = results.analytic[m - Math.round(y)][Math.round(x)];
-    setQueryResult({ fdm: fdmVal.toFixed(2), ana: anaVal.toFixed(2) });
+  const probe = () => {
+    if(!results) return;
+    const {x, y} = query; const m = params.m;
+    if(x < 0 || x > m || y < 0 || y > m) return alert("Out of bounds!");
+    const f = results.fdm[m-y][x]; const a = results.analytic[m-y][x];
+    const acc = 100 * (1 - Math.abs(f-a)/Math.max(a,1));
+    setQueryResult({ f: f.toFixed(3), a: a.toFixed(3), acc: acc.toFixed(3) });
   };
 
+  const squareLayout = (title) => ({
+    title: title, width: 500, height: 500,
+    xaxis: { constrain: 'domain', title: 'X-axis' },
+    yaxis: { scaleanchor: 'x', scaleratio: 1, title: 'Y-axis' },
+    margin: { l: 60, r: 40, t: 50, b: 60 },
+  });
+
   return (
-    <div className="dashboard-container">
+    <div className="dashboard">
       <div className="header">
-        <h1>Thermal Analysis Engine</h1>
-        <p>Numerical Solutions | IIT Patna</p>
-        <div className={`status-pill ${status}`}>
-          {status === 'online' ? '● System Connected' : '○ Connection Error'}
+        <h1>2D Steady State thermal Analysis Dashboard</h1>
+        <div className={`status-badge ${status}`}>
+          {status === 'online' ? '● System Online' : status === 'offline' ? '○ System Offline' : '◌ Checking...'}
         </div>
       </div>
 
-      <div className="top-section-grid">
-        <div className="card">
-          <h3>Simulation Setup</h3>
-          <div className="input-group"><label>Grid Resolution (m)</label><input type="number" value={params.m} onChange={(e)=>setParams({...params, m: Number(e.target.value)})} /></div>
-          <div className="boundary-grid">
+      <div className="top-row">
+        <div className="card config-panel">
+          <h3>Parameters</h3>
+          <div className="input-group">
+            <label>Mesh (m)</label>
+            <input type="number" value={params.m} onChange={e=>setParams({...params, m:Number(e.target.value)})} />
+          </div>
+          <div className="boundary-inputs">
             {['Td','Tu','Tl','Tr'].map(k => (
-              <div key={k} className="input-group"><label>{k} (K)</label><input type="number" value={params[k]} onChange={(e)=>setParams({...params, [k]: Number(e.target.value)})} /></div>
+              <div key={k} className="input-group">
+                <label>{k} (K)</label>
+                <input type="number" placeholder={k} onChange={e=>setParams({...params, [k]:Number(e.target.value)})} />
+              </div>
             ))}
           </div>
-          <button className="btn-exec" onClick={runSimulation} disabled={loading}>{loading ? `Solving (${progress}%)` : 'Solve Heat Equation'}</button>
+          <button className="execute-btn" onClick={solve} disabled={loading || status === 'offline'}>
+            {loading ? `Solving ${progress}%` : 'Execute Analysis'}
+          </button>
+          {loading && <div className="loader-bar"><div className="fill" style={{width: `${progress}%`}}></div></div>}
         </div>
-        
-        {results && (
-          <div className="card query-container">
-            <h3>Coordinate Query</h3>
-            <div className="query-inputs">
-              <input type="number" placeholder="x" onChange={(e)=>setQuery({...query, x:Number(e.target.value)})}/>
-              <input type="number" placeholder="y" onChange={(e)=>setQuery({...query, y:Number(e.target.value)})}/>
-              <button onClick={handleQuery}>Get Temp</button>
-            </div>
-            {queryResult && <div className="query-results"><strong>Numerical: {queryResult.fdm}K</strong> | <strong>Analytical: {queryResult.ana}K</strong></div>}
-          </div>
-        )}
+
+        <div className="metrics-container">
+          <div className="card metric-box"><span>Est. Iterations</span><strong>{prediction.iters}</strong></div>
+          <div className="card metric-box"><span>Actual Iterations</span><strong>{results?.iters || '--'}</strong></div>
+          <div className="card metric-box"><span>Est. Time</span><strong>{prediction.time}s</strong></div>
+          <div className="card metric-box"><span>Actual Time</span><strong>{results ? results.time.toFixed(4)+'s' : '--'}</strong></div>
+        </div>
       </div>
 
       {results && (
-        <div className="plot-grid">
-          <Plot data={[{ z: results.fdm, type: 'heatmap', colorscale: 'Jet' }]} layout={{ title: 'SOR Numerical', width: 450, height: 400 }} />
-          <Plot data={[{ z: results.analytic, type: 'heatmap', colorscale: 'Jet' }]} layout={{ title: 'Fourier Analytical', width: 450, height: 400 }} />
+        <div className="results-area fade-in">
+          <div className="card plot-row">
+            <div className="heatmap-container">
+                <h4>Numerical Solution (FDM)</h4>
+                <Plot data={[{z:results.fdm, type:'heatmap', colorscale:'Jet'}]} layout={squareLayout('')} />
+            </div>
+            <div className="heatmap-container">
+                <h4>Analytical Solution (Fourier)</h4>
+                <Plot data={[{z:results.analytic, type:'heatmap', colorscale:'Jet'}]} layout={squareLayout('')} />
+            </div>
+          </div>
+
+          <div className="bottom-row">
+            <div className="card probe-card">
+              <h3>Coordinate Precision Probe</h3>
+              <div className="probe-inputs">
+                <div className="input-group">
+                  <label style={{fontSize: '0.7rem', fontWeight: 'bold', color: '#64748b', display: 'block', marginBottom: '4px'}}>X-COORDINATE</label>
+                  <input type="number" placeholder="0" onChange={e=>setQuery({...query, x:Number(e.target.value)})}/>
+                </div>
+                <div className="input-group">
+                  <label style={{fontSize: '0.7rem', fontWeight: 'bold', color: '#64748b', display: 'block', marginBottom: '4px'}}>Y-COORDINATE</label>
+                  <input type="number" placeholder="0" onChange={e=>setQuery({...query, y:Number(e.target.value)})}/>
+                </div>
+                <button onClick={probe}>Run Query</button>
+              </div>
+              
+              {queryResult && (
+                <div className="probe-results fade-in">
+                  <p>
+                    <span>Numerical (FDM):</span> 
+                    <strong>{queryResult.f} K</strong>
+                  </p>
+                  <p>
+                    <span>Analytical (Fourier):</span> 
+                    <strong>{queryResult.a} K</strong>
+                  </p>
+                  <p className="acc-text">
+                    <span>Point Accuracy:</span> 
+                    <strong>{queryResult.acc}%</strong>
+                  </p>
+                </div>
+              )}
+            </div>
+
+<div className="card regression-card">
+  <h3>Historical Performance Scatter</h3>
+  <div className="small-plots" style={{ display: 'flex', gap: '20px', justifyContent: 'center' }}>
+    
+    {/* Plot 1: Iterations Scatter */}
+    <Plot 
+      data={[
+        {
+          x: regData?.m_values, 
+          y: regData?.iter_values, 
+          mode: 'markers', 
+          name: 'Past Runs', 
+          marker: {color: '#10b981', size: 8, opacity: 0.6}
+        },
+        {
+          x: [params.m], 
+          y: [results.iters], 
+          mode: 'markers', 
+          name: 'Current', 
+          marker: {color: '#ef4444', size: 12, symbol: 'diamond'}
+        }
+      ]} 
+      layout={{
+        width: 420, height: 350,
+        title: '<b>Iteration Distribution</b>',
+        xaxis: { title: { text: 'Grid Size (m)', standoff: 20 }, gridcolor: '#f1f5f9' },
+        yaxis: { title: { text: 'Iterations (N)', standoff: 20 }, gridcolor: '#f1f5f9' },
+        margin: { t: 60, l: 80, r: 30, b: 80 },
+        paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)'
+      }} 
+    />
+
+    {/* Plot 2: Runtime Scatter */}
+    <Plot 
+      data={[
+        {
+          x: regData?.m_values, 
+          y: regData?.time_values, 
+          mode: 'markers', 
+          name: 'Past Runs', 
+          marker: {color: '#6366f1', size: 8, opacity: 0.6}
+        },
+        {
+          x: [params.m], 
+          y: [results.time], 
+          mode: 'markers', 
+          name: 'Current', 
+          marker: {color: '#ef4444', size: 12, symbol: 'diamond'}
+        }
+      ]} 
+      layout={{
+        width: 420, height: 350,
+        title: '<b>Runtime Distribution</b>',
+        xaxis: { title: { text: 'Grid Size (m)', standoff: 20 }, gridcolor: '#f1f5f9' },
+        yaxis: { title: { text: 'Time (Seconds)', standoff: 20 }, gridcolor: '#f1f5f9' },
+        margin: { t: 60, l: 80, r: 30, b: 80 },
+        paper_bgcolor: 'rgba(0,0,0,0)', plot_bgcolor: 'rgba(0,0,0,0)'
+      }} 
+    />
+  </div>
+</div>
+          </div>
         </div>
       )}
     </div>
   );
 }
+
 export default App;
