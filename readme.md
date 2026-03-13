@@ -1,4 +1,4 @@
-Thermal Analysis Engine | IIT Patna
+2-D Steady state heat transfer analysis | IIT Patna
 
 A high-performance web application designed for ME 2202: Heat and Mass Transfer.
 This engine solves 2D steady-state heat conduction problems using both numerical (Successive Over-Relaxation - SOR) and analytical (Fourier Series) methods.
