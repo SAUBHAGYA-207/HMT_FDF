@@ -8,7 +8,7 @@ Key Features
    Dual Solver Engine: Compare Numerical FDM (SOR) results with Fourier Series Analytical solutions.
    Successive Over-Relaxation (SOR): Optimized numerical solver using PyTorch for accelerated computation.
    Coordinate Precision Probe: Query exact temperature at any (x, y) coordinate with 3-decimal accuracy tracking.
-   System Complexity Profiles: Scatter plots showing Iteration O(n) and Runtime O(n^3) distributions across all historical data.Cloud Telemetry: Integrated with Supabase for real-time data logging and performance regression.
+   System Complexity Profiles: Scatter plots showing Iteration $O(n)$ and Runtime $O(n^3)$ distributions across all historical data.Cloud Telemetry: Integrated with Supabase for real-time data logging and performance regression.
    Modern Dashboard: Responsive UI built with React and Plotly for high-fidelity heatmaps.
    
    🛠 Tech Stack
