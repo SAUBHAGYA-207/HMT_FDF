@@ -37,30 +37,57 @@ class CalculateRequest(BaseModel):
 def sor_solver(Tu, Td, Tl, Tr, n, tol=1e-3, max_iter=10000):
     global progress_store
     progress_store["current"] = 0
+    last_progress = 0
+
     start_time = time.perf_counter()
+
     T = torch.full((n, n), (Tu+Td+Tl+Tr)/4.0, dtype=torch.float32)
+
     omega = 2.0 / (1.0 + math.sin(math.pi / (n + 1)))
+
     I, J = torch.meshgrid(torch.arange(n), torch.arange(n), indexing="ij")
     red_mask = (I + J) % 2 == 0
     black_mask = ~red_mask
+
     initial_diff = 0
+
     for it in range(max_iter):
         T_old = T.clone()
+
         for mask in [red_mask, black_mask]:
+
             north = torch.zeros_like(T); north[1:,:] = T[:-1,:]; north[0,:] = Tu
             south = torch.zeros_like(T); south[:-1,:] = T[1:,:]; south[-1,:] = Td
-            west = torch.zeros_like(T); west[:,1:] = T[:,:-1]; west[:,0] = Tl
-            east = torch.zeros_like(T); east[:,:-1] = T[:,1:]; east[:,-1] = Tr
-            T_new = 0.25 * (north + south + west + east)
-            T[mask] = (1 - omega) * T[mask] + omega * T_new[mask]
-        diff = torch.max(torch.abs(T - T_old)).item()
-        if it == 0: initial_diff = max(diff, 1e-9)
-        if diff > tol:
-            progress_store["current"] = int(max(0, min(99, 100 * (1 - math.log(diff/tol)/math.log(initial_diff/tol)))))
-        else: break
-    progress_store["current"] = 100
-    return T, time.perf_counter() - start_time, it + 1
+            west  = torch.zeros_like(T); west[:,1:] = T[:,:-1]; west[:,0] = Tl
+            east  = torch.zeros_like(T); east[:,:-1] = T[:,1:]; east[:,-1] = Tr
 
+            T_new = 0.25 * (north + south + west + east)
+
+            T[mask] = (1 - omega) * T[mask] + omega * T_new[mask]
+
+        diff = torch.max(torch.abs(T - T_old)).item()
+
+        if it == 0:
+            initial_diff = max(diff, 1e-9)
+
+        if diff > tol:
+            progress = int(
+                max(0, min(99,
+                100 * (1 - math.log(diff/tol) / math.log(initial_diff/tol))
+                ))
+            )
+
+            # only increase progress
+            if progress > last_progress:
+                last_progress = progress
+                progress_store["current"] = progress
+
+        else:
+            break
+
+    progress_store["current"] = 100
+
+    return T, time.perf_counter() - start_time, it + 1
 @app.get("/api/health")
 def health(): return {"status": "online"}
 
@@ -85,12 +112,8 @@ def calculate(req: CalculateRequest):
         if np.isinf(s_npi): break
         c = 4.0/(npi*s_npi)
         ana += c*(req.Tu*np.sinh(npi*y)*np.sin(npi*x) + req.Td*np.sinh(npi*(1-y))*np.sin(npi*x) + req.Tl*np.sinh(npi*(1-x))*np.sin(npi*y) + req.Tr*np.sinh(npi*x)*np.sin(npi*y))
-    
-    # Analytical already assumes y=0 at bottom, but we apply 
-    # flipud to maintain absolute coordinate indexing parity with the FDM array.
+
     ana[0,:]=req.Td; ana[-1,:]=req.Tu; ana[:,0]=req.Tl; ana[:,-1]=req.Tr
-    #ana = np.flipud(ana) 
-    
     
     internal_fdm = fdm[1:-1, 1:-1]
     internal_ana = ana[1:-1, 1:-1]
