@@ -18,7 +18,7 @@ Key Features
    
    💻 Local Installation
    1. Clone the Repository
-        Bash git clone https://github.com/your-username/thermal-analysis-engine.git
+        Bash git clone https://github.com/SAUBHAGYA-207/thermal-analysis-engine.git
         cd thermal-analysis-engine
 2. Backend Setup
         Navigate to the root directory and install dependencies:Bash# Create a virtual environment (recommended)
