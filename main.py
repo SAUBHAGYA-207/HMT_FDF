@@ -32,14 +32,23 @@ progress_store = {"current": 0}
 
 class CalculateRequest(BaseModel):
     m: int
-    Tu: float; Td: float; Tl: float; Tr: float
+    Tu: float
+    Td: float
+    Tl: float
+    Tr: float
+    h: float
+    T_inf: float
 
-def sor_solver(Tu, Td, Tl, Tr, n, tol=1e-3, max_iter=10000):
+def sor_solver(Tu, Td, Tl, Tr, n, h=10.0, T_inf=25.0, k=1.0, tol=1e-3, max_iter=10000):
+
     global progress_store
     progress_store["current"] = 0
     last_progress = 0
 
     start_time = time.perf_counter()
+
+    dy = 1.0 / n
+    dx = 1.0 / n
 
     T = torch.full((n, n), (Tu+Td+Tl+Tr)/4.0, dtype=torch.float32)
 
@@ -52,36 +61,55 @@ def sor_solver(Tu, Td, Tl, Tr, n, tol=1e-3, max_iter=10000):
     initial_diff = 0
 
     for it in range(max_iter):
+
         T_old = T.clone()
 
         for mask in [red_mask, black_mask]:
 
-            north = torch.zeros_like(T); north[1:,:] = T[:-1,:]; north[0,:] = Tu
-            south = torch.zeros_like(T); south[:-1,:] = T[1:,:]; south[-1,:] = Td
-            west  = torch.zeros_like(T); west[:,1:] = T[:,:-1]; west[:,0] = Tl
-            east  = torch.zeros_like(T); east[:,:-1] = T[:,1:]; east[:,-1] = Tr
+            north = torch.zeros_like(T)
+            south = torch.zeros_like(T)
+            west  = torch.zeros_like(T)
+            east  = torch.zeros_like(T)
 
-            T_new = 0.25 * (north + south + west + east)
+            north[1:,:] = T[:-1,:]
+            south[:-1,:] = T[1:,:]
+            west[:,1:] = T[:,:-1]
+            east[:,:-1] = T[:,1:]
 
-            T[mask] = (1 - omega) * T[mask] + omega * T_new[mask]
+            # ---------- CONVECTIVE BOUNDARIES ----------
+
+            # top
+            north[0,:] = (k*T[1,:] + h*dy*T_inf)/(k + h*dy)
+
+            # bottom
+            south[-1,:] = (k*T[-2,:] + h*dy*T_inf)/(k + h*dy)
+
+            # left
+            west[:,0] = (k*T[:,1] + h*dx*T_inf)/(k + h*dx)
+
+            # right
+            east[:,-1] = (k*T[:,-2] + h*dx*T_inf)/(k + h*dx)
+
+            T_new = 0.25*(north + south + west + east)
+
+            T[mask] = (1 - omega)*T[mask] + omega*T_new[mask]
 
         diff = torch.max(torch.abs(T - T_old)).item()
 
         if it == 0:
-            initial_diff = max(diff, 1e-9)
+            initial_diff = max(diff,1e-9)
 
         if diff > tol:
+
             progress = int(
-                max(0, min(99,
-                100 * (1 - math.log(diff/tol) / math.log(initial_diff/tol))
+                max(0,min(99,
+                100*(1-math.log(diff/tol)/math.log(initial_diff/tol))
                 ))
             )
 
-            # only increase progress
             if progress > last_progress:
                 last_progress = progress
                 progress_store["current"] = progress
-
         else:
             break
 
@@ -96,9 +124,14 @@ def get_progress(): return {"progress": progress_store["current"]}
 
 @app.post("/api/calculate")
 def calculate(req: CalculateRequest):
-    temp_core, solve_time, iters = sor_solver(req.Tu, req.Td, req.Tl, req.Tr, req.m-1)
+    temp_core, solve_time, iters = sor_solver(
+    req.Tu, req.Td, req.Tl, req.Tr,
+    req.m-1,
+    req.h,
+    req.T_inf
+)
     fdm = np.zeros((req.m+1, req.m+1))
-    fdm[1:-1, 1:-1] = temp_core.numpy()
+    fdm[1:-1, 1:-1] = temp_core.detach().cpu().numpy()
     fdm[0,:]=req.Tu; fdm[-1,:]=req.Td; fdm[:,0]=req.Tl; fdm[:,-1]=req.Tr
     
     # Correct orientation: Array indexing is y=0 at top. 

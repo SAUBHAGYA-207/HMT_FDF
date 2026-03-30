@@ -103,7 +103,7 @@ function App() {
         <div className="metrics-container">
           <div className="card metric-box"><span>Est. Iterations</span><strong>{prediction.iters}</strong></div>
           <div className="card metric-box"><span>Actual Iterations</span><strong>{results?.iters || '--'}</strong></div>
-          <div className="card metric-box"><span>Est. Time</span><strong>{prediction.time}s</strong></div>
+          <div className="card metric-box"><span>Est. Time</span><strong>{prediction.time}</strong></div>
           <div className="card metric-box"><span>Actual Time</span><strong>{results ? results.time.toFixed(4)+'s' : '--'}</strong></div>
         </div>
       </div>
